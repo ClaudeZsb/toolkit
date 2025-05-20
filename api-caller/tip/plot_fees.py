@@ -25,11 +25,11 @@ block_formatter = ticker.FuncFormatter(format_block_number)
 
 # 1. Plot eth  eth_maxPriorityFeePerGas
 ax1 = plt.subplot(411)
-ax1.plot(df['block_number'], df['max_priority_fee_gwei'], 'b-', label='eth_eth_maxPriorityFeePerGas')
+ax1.plot(df['block_number'], df['max_priority_fee_gwei'], 'b-', label='ETH Pattern: eth_maxPriorityFeePerGas')
 ax1.set_xlabel('Block Number')
 ax1.set_ylabel('api result (gwei)', color='b')
 ax1.tick_params(axis='y', labelcolor='b')
-ax1.set_title('Eth: eth_maxPriorityFeePerGas Over Time')
+ax1.set_title('ETH Pattern: eth_maxPriorityFeePerGas Over Time')
 ax1.grid(True)
 ax1.legend()
 # Apply the formatter to x-axis
@@ -49,11 +49,11 @@ ax2.xaxis.set_major_formatter(block_formatter)
 
 # 3. Plot op eth_maxPriorityFeePerGas
 ax3 = plt.subplot(413)
-ax3.plot(df['block_number'], [0.001] * len(df), 'g-', label='op_eth_maxPriorityFeePerGas')
+ax3.plot(df['block_number'], [0.001] * len(df), 'g-', label='OP Pattern: eth_maxPriorityFeePerGas')
 ax3.set_xlabel('Block Number')
 ax3.set_ylabel('api result (gwei)', color='g')
 ax3.tick_params(axis='y', labelcolor='g')
-ax3.set_title('Op: eth_maxPriorityFeePerGas Over Time')
+ax3.set_title('OP Pattern: eth_maxPriorityFeePerGas Over Time')
 ax3.grid(True)
 ax3.legend()
 # Apply the formatter to x-axis
@@ -85,7 +85,7 @@ lines1, labels1 = ax4.get_legend_handles_labels()
 lines2, labels2 = ax4_twin.get_legend_handles_labels()
 ax4.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
 
-ax4.set_title('Eth & Op: eth_maxPriorityFeePerGas Over Time')
+ax4.set_title('ETH & OP Pattern: eth_maxPriorityFeePerGas Over Time')
 ax4.grid(True)
 
 # Adjust layout and save

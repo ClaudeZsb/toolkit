@@ -190,33 +190,50 @@ python plot_fees.py
 ```
 
 3. The script will generate:
-   - A file named `fee_analysis.png` containing three plots:
-     1. Max Priority Fee over time
+   - A file named `fee_analysis.png` containing four plots:
+     1. ETH Pattern Max Priority Fee over time
      2. Gas Usage Ratio over time
-     3. Combined plot with both metrics (dual y-axes)
+     3. OP Pattern Max Priority Fee over time
+     4. Combined plot with both metrics (dual y-axes)
    - Console output with statistical information about the data
 
 ## Output
 
 ### Generated Image (`fee_analysis.png`)
 
-The image contains three plots:
+The image contains four plots:
 
-1. **Max Priority Fee Plot** (Top)
-   - X-axis: Block Number
+1. **ETH Pattern Max Priority Fee Plot** (Top)
+   - X-axis: Block Number (formatted with commas)
    - Y-axis: Max Priority Fee (gwei)
-   - Blue line showing fee trends
+   - Blue line showing ETH Pattern eth_maxPriorityFeePerGas trends
+   - Title: "ETH Pattern: eth_maxPriorityFeePerGas Over Time"
 
-2. **Gas Usage Ratio Plot** (Middle)
-   - X-axis: Block Number
-   - Y-axis: Gas Usage Ratio
+2. **Gas Usage Ratio Plot** (Second)
+   - X-axis: Block Number (formatted with commas)
+   - Y-axis: Gas Usage Ratio (%)
    - Red line showing gas usage trends
+   - Title: "Gas Usage Ratio Over Time"
 
-3. **Combined Plot** (Bottom)
-   - X-axis: Block Number
-   - Left Y-axis: Max Priority Fee (gwei) in blue
-   - Right Y-axis: Gas Usage Ratio in red
-   - Both metrics plotted on the same graph for easy comparison
+3. **OP Pattern Max Priority Fee Plot** (Third)
+   - X-axis: Block Number (formatted with commas)
+   - Y-axis: Max Priority Fee (gwei)
+   - Green line showing OP Pattern eth_maxPriorityFeePerGas (constant at 0.001 gwei)
+   - Title: "OP Pattern: eth_maxPriorityFeePerGas Over Time"
+
+4. **Combined Plot** (Bottom)
+   - X-axis: Block Number (formatted with commas)
+   - Left Y-axis: ETH Pattern Max Priority Fee (gwei) in blue
+   - Right Y-axis: OP Pattern Max Priority Fee (gwei) in green
+   - Both patterns plotted on the same graph for easy comparison
+   - Title: "ETH & OP Pattern: eth_maxPriorityFeePerGas Over Time"
+   - Legend showing both patterns ("eth pattern" and "op pattern")
+
+All plots use:
+- The 'bmh' style for clean visualization
+- Grid lines for better readability
+- Block numbers formatted with commas for better readability
+- High resolution (300 DPI) output
 
 ### Console Output
 
