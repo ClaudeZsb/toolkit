@@ -1,4 +1,4 @@
-module block-history
+module base-fee-calculator
 
 go 1.21
 

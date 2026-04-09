@@ -130,13 +130,14 @@ def main():
     
     # Define elasticity values to test
     # elasticity_values = [2, 5, 10, 20, 50]
-    # elasticity_values = [72, 74, 75, 76, 77, 78, 79, 80]
-    elasticity_values = [75]
+    elasticity_values = [72, 74, 75, 76, 78]
+    # elasticity_values = [75]
     
     # Define denominator values to test
     # When elasticity_values has >1 element, denominator_values should have only 1 element
     # When elasticity_values has 1 element, denominator_values can have multiple elements
-    denominator_values = [100, 200, 250, 300, 400]
+    # denominator_values = [100, 200, 250, 300, 400]
+    denominator_values = [250]
     
     # Validate the configuration
     if len(elasticity_values) > 1 and len(denominator_values) > 1:
@@ -176,7 +177,7 @@ def main():
     df_clean['Gas Limit'] = pd.to_numeric(df_clean['Gas Limit'])
     
     # Sort by block number
-    df_clean = df_clean.sort_values('Block Number').reset_index(drop=True)
+    df_clean = df_clean.sort_values(by='Block Number', ignore_index=True)  # type: ignore
     
     print("Processing {} valid blocks".format(len(df_clean)))
     
@@ -258,21 +259,40 @@ def main():
         # Plot gas usage ratio on secondary y-axis of main plot
         ax1_twin = ax1.twinx()
         color2 = '#ff7f0e'
-        ax1_twin.set_ylabel('Gas Usage Ratio', color=color2, fontsize=12)
+        ax1_twin.set_ylabel('Gas Usage Ratio (100-block avg)', color=color2, fontsize=12)
+        
+        # Calculate gas usage ratio
         gas_usage_ratio = df_clean['Gas Used'] / df_clean['Gas Limit']
-        line2 = ax1_twin.plot(df_clean['Block Number'], gas_usage_ratio, 
-                        color=color2, linewidth=1, alpha=0.7, label='Gas Usage Ratio')
+        
+        # Calculate average gas usage for every 100 blocks
+        block_numbers = df_clean['Block Number'].to_numpy()
+        gas_usage_ratio_np = gas_usage_ratio.to_numpy()
+        avg_gas_usage_100 = []
+        avg_block_numbers = []
+        
+        for i in range(0, len(gas_usage_ratio_np), 100):
+            end_idx = min(i + 100, len(gas_usage_ratio_np))
+            avg_ratio = np.mean(gas_usage_ratio_np[i:end_idx])
+            avg_block_num = np.mean(block_numbers[i:end_idx])
+            avg_gas_usage_100.append(avg_ratio)
+            avg_block_numbers.append(avg_block_num)
+        
+        line2 = ax1_twin.plot(avg_block_numbers, avg_gas_usage_100, 
+                        color=color2, linewidth=2, alpha=0.8, label='Gas Usage Ratio (100-block avg)')
         ax1_twin.tick_params(axis='y', labelcolor=color2)
         
         # Add horizontal lines for target ratios of different elasticity values
-        for i, value in enumerate(comparison_values):
-            if comparison_type == "Elasticity":
+        if comparison_type == "Elasticity":
+            for i, value in enumerate(comparison_values):
                 target_ratio = 1.0 / value
                 label = 'Target E={} ({:.1%})'.format(value, target_ratio)
-            else:  # Denominator comparison
-                target_ratio = 1.0 / single_elasticity  # Same target for all denominators
-                label = 'Target E={} ({:.1%})'.format(single_elasticity, target_ratio)
-            ax1_twin.axhline(y=target_ratio, color=colors[i % len(colors)], linestyle='--', alpha=0.3, 
+                ax1_twin.axhline(y=target_ratio, color=colors[i % len(colors)], linestyle='--', alpha=0.3, 
+                           label=label)
+        else:  # Denominator comparison
+            # Only draw once since all denominators have the same target ratio
+            target_ratio = 1.0 / single_elasticity
+            label = 'Target E={} ({:.1%})'.format(single_elasticity, target_ratio)
+            ax1_twin.axhline(y=target_ratio, color=colors[0], linestyle='--', alpha=0.3, 
                        label=label)
         
         # Combine legends for main plot
