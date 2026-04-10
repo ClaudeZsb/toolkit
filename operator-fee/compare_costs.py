@@ -43,6 +43,9 @@ BPGU_INTERCEPT_USER_ONLY = (BPGU_INTERCEPT_REGRESSION
 # Average gas per user tx (Q1 2026: avg_gas / avg_tx = 4,918,467,626 / 33,832)
 AVG_GAS_PER_USER_TX = 145_379
 
+# Average priority fee per gas (gwei, in MNT)
+AVG_PRIORITY_FEE_GWEI = 102.874
+
 # ── Default parameter values ─────────────────────────────────────────────
 DEFAULT_ETH_PRICE = 1800       # USD
 DEFAULT_MNT_PRICE = 0.80       # USD
@@ -55,9 +58,12 @@ GAS_MAX = 500_000
 GASUSED = np.linspace(GAS_MIN, GAS_MAX, 1000)
 
 
-def pre_arsia_cost(gasused, eth_price, mnt_price):
+def pre_arsia_cost(gasused, eth_price, mnt_price, include_priority_fee=False):
     """Pre-Arsia tx cost in MNT = 0.02 gwei (MNT) * gasused * eth_price / mnt_price."""
-    return 0.02e-9 * gasused * eth_price / mnt_price
+    cost = 0.02e-9 * gasused * eth_price / mnt_price
+    if include_priority_fee:
+        cost = cost + AVG_PRIORITY_FEE_GWEI * 1e-9 * gasused
+    return cost
 
 
 def operator_fee(gasused, daily_tx_count, mnt_price, share_system_tx=False):
@@ -87,16 +93,19 @@ def post_arsia_cost_direct(gasused, x_gwei, fee_constant, fee_scalar):
     return x_gwei * 1e-9 * gasused + fee_constant + fee_scalar * 100 * gasused
 
 
-def find_breakeven_direct(eth_price, mnt_price, x_gwei, fee_constant, fee_scalar):
+def find_breakeven_direct(eth_price, mnt_price, x_gwei, fee_constant, fee_scalar,
+                          include_priority_fee=False):
     """Solve for gasused where pre == post cost.
 
-    pre  = 0.02e-9 * gas * eth_price / mnt_price
+    pre  = (0.02e-9 * eth/mnt [+ 102.874e-9]) * gas
     post = x*1e-9 * gas + feeConstant + feeScalar * 100 * gas
 
     Setting pre = post:
-      (0.02e-9 * eth/mnt - x*1e-9 - feeScalar*100) * gas = feeConstant
+      slope_diff * gas = feeConstant
     """
     slope_diff = 0.02e-9 * eth_price / mnt_price - x_gwei * 1e-9 - fee_scalar * 100
+    if include_priority_fee:
+        slope_diff += AVG_PRIORITY_FEE_GWEI * 1e-9
     if slope_diff <= 0:
         return None
     return fee_constant / slope_diff
@@ -142,13 +151,16 @@ def calc_operator_fee_params(daily_tx_count, mnt_price, share_system_tx=False):
     return fee_constant, fee_scalar
 
 
-def calc_daily_pnl(daily_tx_count, mnt_price, fee_constant, fee_scalar):
+def calc_daily_pnl(daily_tx_count, mnt_price, fee_constant, fee_scalar, x_gwei):
     """Calculate daily operator P&L with cost breakdown (in MNT).
 
     Uses the full regression model (all txs) to compute total cost, then
     splits into user-tx cost and system-tx cost proportionally by tx count.
 
-    Returns (total_cost, user_cost, system_cost, daily_revenue, surplus).
+    Revenue = base fee (gas price × gas) + operator fee.
+
+    Returns (total_cost, user_cost, system_cost,
+             base_fee_rev, operator_fee_rev, surplus).
     """
     # Full regression with all txs
     total_tx = daily_tx_count + L1_INFO_TX_PER_DAY
@@ -171,10 +183,12 @@ def calc_daily_pnl(daily_tx_count, mnt_price, fee_constant, fee_scalar):
                    + b * system_gas) / mnt_price
     user_cost = total_cost - system_cost
 
-    # Revenue from operator fees (only user txs pay, system txs never charged)
-    daily_revenue = daily_tx_count * fee_constant + fee_scalar * 100 * user_gas
+    # Revenue: base fee (gas price) + operator fee (only user txs pay)
+    base_fee_rev = x_gwei * 1e-9 * user_gas
+    operator_fee_rev = daily_tx_count * fee_constant + fee_scalar * 100 * user_gas
+    total_rev = base_fee_rev + operator_fee_rev
 
-    return total_cost, user_cost, system_cost, daily_revenue, daily_revenue - total_cost
+    return total_cost, user_cost, system_cost, base_fee_rev, operator_fee_rev, total_rev - total_cost
 
 
 def main():
@@ -252,7 +266,7 @@ def main():
                    valinit=DEFAULT_MNT_PRICE, valstep=0.05, color='orange')
     s_tx  = Slider(ax_tx,  'Daily Tx Count', 10_000, 200_000,
                    valinit=DEFAULT_DAILY_TX, valstep=5000, color='green')
-    s_x   = Slider(ax_x,   'Post Gas (gwei)', 0.01, 50,
+    s_x   = Slider(ax_x,   'Post Gas (gwei)', 0.01, 100,
                    valinit=DEFAULT_POST_GWEI, valstep=0.01, color='tomato')
     s_fc  = Slider(ax_fc,  'FeeConstant (MNT)', 0, 0.02,
                    valinit=init_fc, valfmt='%.6f', color='darkorange')
@@ -263,10 +277,11 @@ def main():
     fig.text(slider_left, 0.135, '── Operator Fee Params (auto-synced from model, or adjust manually) ──',
              fontsize=8, color='gray', style='italic')
 
-    # ── System tx sharing toggle ─────────────────────────────────────────
-    ax_chk = plt.axes([0.65, 0.07, 0.18, 0.10])
-    chk = CheckButtons(ax_chk, ['System Tx\nShare Cost'], [False])
-    ax_chk.set_title('L1 Info Tx', fontsize=9, fontweight='bold')
+    # ── Checkboxes ───────────────────────────────────────────────────────
+    ax_chk = plt.axes([0.65, 0.04, 0.18, 0.15])
+    chk = CheckButtons(ax_chk, ['System Tx\nShare Cost', 'Include\nPriority Fee'], [False, False])
+    fig.text(0.84, 0.14, 'Priority fee: 102.874 gwei\n(affects Pre-Arsia only)',
+             fontsize=7, color='gray', style='italic')
 
     # ── Sync / update logic ──────────────────────────────────────────────
     _syncing = [False]  # flag to prevent feedback loops
@@ -291,8 +306,9 @@ def main():
         fc    = s_fc.val
         fs    = s_fs.val * 1e-10  # convert back from ×1e-10
         share = chk.get_status()[0]
+        prio  = chk.get_status()[1]
 
-        y_pre_new = pre_arsia_cost(GASUSED, eth, mnt)
+        y_pre_new = pre_arsia_cost(GASUSED, eth, mnt, prio)
         y_post_new = post_arsia_cost_direct(GASUSED, x, fc, fs)
 
         line_pre.set_ydata(y_pre_new)
@@ -309,10 +325,10 @@ def main():
                         color='red', alpha=0.12)
 
         # Update breakeven
-        be = find_breakeven_direct(eth, mnt, x, fc, fs)
+        be = find_breakeven_direct(eth, mnt, x, fc, fs, prio)
         if be and GAS_MIN <= be <= GAS_MAX:
             be_line.set_xdata([be, be])
-            be_cost = pre_arsia_cost(be, eth, mnt)
+            be_cost = pre_arsia_cost(be, eth, mnt, prio)
             be_text.set_position((be + (GAS_MAX - GAS_MIN) * 0.01, be_cost))
             be_text.set_text(f'Breakeven\n{format_gas(be)} gas\n{be_cost:.6f} MNT')
             be_line.set_visible(True)
@@ -328,19 +344,26 @@ def main():
         ax.set_ylim(y_min - margin, y_max + margin)
 
         # Update operator fee params + daily P&L display
-        total_cost, user_cost, system_cost, revenue, surplus = calc_daily_pnl(
-            tx, mnt, fc, fs)
+        total_cost, user_cost, system_cost, base_rev, op_rev, surplus = calc_daily_pnl(
+            tx, mnt, fc, fs, x)
         color = 'green' if surplus >= 0 else 'red'
+        total_rev = base_rev + op_rev
+        pre_rev = tx * pre_arsia_cost(AVG_GAS_PER_USER_TX, eth, mnt, prio)
+        rev_diff = total_rev - pre_rev
         params_text.set_text(
             f'Operator Fee Params (MNT)\n'
             f'Constant: {fc:.10f}\n'
             f'Scalar:   {fs:.15f}\n'
-            f'─────────────────────────────\n'
-            f'Daily ZKP Cost: {total_cost:>12.2f} MNT\n'
-            f'  User Tx:      {user_cost:>12.2f} MNT\n'
-            f'  System Tx:    {system_cost:>12.2f} MNT\n'
-            f'Operator Fee:   {revenue:>12.2f} MNT\n'
-            f'Surplus:        {surplus:>+12.2f} MNT'
+            f'─────────────────────────────────\n'
+            f'Daily ZKP Cost:   {total_cost:>12.2f} MNT\n'
+            f'  User Tx:        {user_cost:>12.2f} MNT\n'
+            f'  System Tx:      {system_cost:>12.2f} MNT\n'
+            f'Post-Arsia Rev:   {total_rev:>12.2f} MNT\n'
+            f'  Base Fee:       {base_rev:>12.2f} MNT\n'
+            f'  Operator Fee:   {op_rev:>12.2f} MNT\n'
+            f'Pre-Arsia Rev:    {pre_rev:>12.2f} MNT\n'
+            f'Rev Difference:   {rev_diff:>+12.2f} MNT\n'
+            f'Post-Arsia P&L:   {surplus:>+12.2f} MNT'
         )
         params_text.get_bbox_patch().set_edgecolor(color)
 

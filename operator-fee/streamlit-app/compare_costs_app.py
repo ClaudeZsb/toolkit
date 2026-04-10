@@ -28,14 +28,20 @@ BPGU_INTERCEPT_USER_ONLY = (BPGU_INTERCEPT_REGRESSION
 # Average gas per user tx (Q1 2026: avg_gas / avg_tx = 4,918,467,626 / 33,832)
 AVG_GAS_PER_USER_TX = 145_379
 
+# Average priority fee per gas (gwei, in MNT)
+AVG_PRIORITY_FEE_GWEI = 102.874
+
 # ── Gas used range ───────────────────────────────────────────────────────
 GAS_MIN = 0
 GAS_MAX = 500_000
 GASUSED = np.linspace(GAS_MIN, GAS_MAX, 1000)
 
 
-def pre_arsia_cost(gasused, eth_price, mnt_price):
-    return 0.02e-9 * gasused * eth_price / mnt_price
+def pre_arsia_cost(gasused, eth_price, mnt_price, include_priority_fee=False):
+    cost = 0.02e-9 * gasused * eth_price / mnt_price
+    if include_priority_fee:
+        cost = cost + AVG_PRIORITY_FEE_GWEI * 1e-9 * gasused
+    return cost
 
 
 def calc_operator_fee_params(daily_tx_count, mnt_price, share_system_tx=False):
@@ -54,7 +60,7 @@ def calc_operator_fee_params(daily_tx_count, mnt_price, share_system_tx=False):
     return fee_constant, fee_scalar
 
 
-def calc_daily_pnl(daily_tx_count, mnt_price, fee_constant, fee_scalar):
+def calc_daily_pnl(daily_tx_count, mnt_price, fee_constant, fee_scalar, x_gwei):
     # Full regression with all txs
     total_tx = daily_tx_count + L1_INFO_TX_PER_DAY
     user_gas = daily_tx_count * AVG_GAS_PER_USER_TX
@@ -76,17 +82,23 @@ def calc_daily_pnl(daily_tx_count, mnt_price, fee_constant, fee_scalar):
                    + b * system_gas) / mnt_price
     user_cost = total_cost - system_cost
 
-    # Revenue from operator fees (only user txs pay, system txs never charged)
-    daily_revenue = daily_tx_count * fee_constant + fee_scalar * 100 * user_gas
-    return total_cost, user_cost, system_cost, daily_revenue, daily_revenue - total_cost
+    # Revenue: base fee (gas price) + operator fee (only user txs pay)
+    base_fee_rev = x_gwei * 1e-9 * user_gas
+    operator_fee_rev = daily_tx_count * fee_constant + fee_scalar * 100 * user_gas
+    total_rev = base_fee_rev + operator_fee_rev
+
+    return total_cost, user_cost, system_cost, base_fee_rev, operator_fee_rev, total_rev - total_cost
 
 
 def post_arsia_cost_direct(gasused, x_gwei, fee_constant, fee_scalar):
     return x_gwei * 1e-9 * gasused + fee_constant + fee_scalar * 100 * gasused
 
 
-def find_breakeven_direct(eth_price, mnt_price, x_gwei, fee_constant, fee_scalar):
+def find_breakeven_direct(eth_price, mnt_price, x_gwei, fee_constant, fee_scalar,
+                          include_priority_fee=False):
     slope_diff = 0.02e-9 * eth_price / mnt_price - x_gwei * 1e-9 - fee_scalar * 100
+    if include_priority_fee:
+        slope_diff += AVG_PRIORITY_FEE_GWEI * 1e-9
     if slope_diff <= 0:
         return None
     return fee_constant / slope_diff
@@ -110,10 +122,12 @@ st.sidebar.header("Market Parameters")
 eth_price = st.sidebar.slider("ETH Price ($)", 500, 5000, 1800, step=50)
 mnt_price = st.sidebar.slider("MNT Price ($)", 0.05, 3.0, 0.80, step=0.05)
 daily_tx = st.sidebar.slider("Daily User Tx Count", 10_000, 200_000, 35_000, step=5000)
-x_gwei = st.sidebar.slider("Post-Arsia Gas Price (gwei)", 0.01, 50.0, 10.0, step=0.01)
+x_gwei = st.sidebar.slider("Post-Arsia Gas Price (gwei)", 0.01, 100.0, 10.0, step=0.01)
 
-st.sidebar.header("L1 Info Tx")
+st.sidebar.header("Options")
 share_system_tx = st.sidebar.checkbox("System Tx Share Cost", value=False)
+include_priority_fee = st.sidebar.checkbox("Include Priority Fee", value=False)
+st.sidebar.caption("Priority fee: 102.874 gwei (affects Pre-Arsia only)")
 
 # Compute model-suggested fee params
 model_fc, model_fs = calc_operator_fee_params(daily_tx, mnt_price, share_system_tx)
@@ -131,9 +145,10 @@ fee_scalar_display = st.sidebar.number_input(
 fee_scalar = fee_scalar_display * 1e-10
 
 # ── Compute costs ────────────────────────────────────────────────────────
-y_pre = pre_arsia_cost(GASUSED, eth_price, mnt_price)
+y_pre = pre_arsia_cost(GASUSED, eth_price, mnt_price, include_priority_fee)
 y_post = post_arsia_cost_direct(GASUSED, x_gwei, fee_constant, fee_scalar)
-breakeven = find_breakeven_direct(eth_price, mnt_price, x_gwei, fee_constant, fee_scalar)
+breakeven = find_breakeven_direct(eth_price, mnt_price, x_gwei, fee_constant, fee_scalar,
+                                  include_priority_fee)
 
 # ── Build Plotly chart ───────────────────────────────────────────────────
 fig = go.Figure()
@@ -184,7 +199,7 @@ for gas_val, label, color, pos in TX_TYPES:
 
 # Breakeven line
 if breakeven and GAS_MIN <= breakeven <= GAS_MAX:
-    be_cost = pre_arsia_cost(breakeven, eth_price, mnt_price)
+    be_cost = pre_arsia_cost(breakeven, eth_price, mnt_price, include_priority_fee)
     fig.add_vline(x=breakeven, line_dash="dash", line_color="gray", line_width=1,
                   annotation_text=f"Breakeven<br>{format_gas(breakeven)} gas<br>{be_cost:.6f} MNT",
                   annotation_position="bottom right",
@@ -215,24 +230,32 @@ with col3:
         st.metric("Breakeven Gas", "N/A (no crossover)")
 
 # ── Daily P&L ────────────────────────────────────────────────────────────
-total_cost, user_cost, system_cost, daily_revenue, surplus = calc_daily_pnl(
-    daily_tx, mnt_price, fee_constant, fee_scalar)
+total_cost, user_cost, system_cost, base_rev, op_rev, surplus = calc_daily_pnl(
+    daily_tx, mnt_price, fee_constant, fee_scalar, x_gwei)
+total_rev = base_rev + op_rev
+pre_rev = daily_tx * pre_arsia_cost(AVG_GAS_PER_USER_TX, eth_price, mnt_price, include_priority_fee)
+rev_diff = total_rev - pre_rev
 
-pcol1, pcol2, pcol3 = st.columns(3)
+pcol1, pcol2, pcol3, pcol4 = st.columns(4)
 with pcol1:
     st.metric("Daily ZKP Cost", f"{total_cost:,.2f} MNT")
-    st.caption(f"  User Tx: {user_cost:,.2f} MNT  |  System Tx: {system_cost:,.2f} MNT")
+    st.caption(f"User Tx: {user_cost:,.2f} | System Tx: {system_cost:,.2f}")
 with pcol2:
-    st.metric("Operator Fee", f"{daily_revenue:,.2f} MNT")
+    st.metric("Post-Arsia Rev", f"{total_rev:,.2f} MNT")
+    st.caption(f"Base Fee: {base_rev:,.2f} | Operator Fee: {op_rev:,.2f}")
 with pcol3:
-    st.metric("Surplus", f"{surplus:+,.2f} MNT",
+    st.metric("Pre-Arsia Rev", f"{pre_rev:,.2f} MNT")
+    st.metric("Rev Difference", f"{rev_diff:+,.2f} MNT",
+              delta=f"{rev_diff:+,.2f}", delta_color="normal")
+with pcol4:
+    st.metric("Post-Arsia P&L", f"{surplus:+,.2f} MNT",
               delta=f"{surplus:+,.2f}", delta_color="normal")
 
 # ── Cost comparison table ────────────────────────────────────────────────
 st.subheader("Cost at Typical Transaction Types")
 table_data = []
 for label, gas_val in [("Native Transfer", 21_000), ("ERC20 Transfer", 50_000), ("DEX Swap", 200_000)]:
-    pre = pre_arsia_cost(gas_val, eth_price, mnt_price)
+    pre = pre_arsia_cost(gas_val, eth_price, mnt_price, include_priority_fee)
     post = post_arsia_cost_direct(gas_val, x_gwei, fee_constant, fee_scalar)
     diff_pct = (post - pre) / pre * 100 if pre > 0 else 0
     table_data.append({
