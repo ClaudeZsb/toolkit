@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 # ── Regression constants (from analyze_relationship.py, filtered model) ──
-BPGU_INTERCEPT = 531.78
+BPGU_INTERCEPT_REGRESSION = 531.78
 BPGU_COEF_TX = -0.000017
 BPGU_COEF_GAS = 0.0000000318
 BPGU_PRICE_USD = 0.58
@@ -20,9 +20,13 @@ FIXED_DAILY_COST_USD = 100
 L1_INFO_TX_PER_DAY = 43_200
 L1_INFO_GAS_PER_TX = 51_000
 
-BPGU_INTERCEPT_SHARED = (BPGU_INTERCEPT
-                         - BPGU_COEF_TX * L1_INFO_TX_PER_DAY
-                         - BPGU_COEF_GAS * L1_INFO_TX_PER_DAY * L1_INFO_GAS_PER_TX)
+BPGU_INTERCEPT_SHARED = BPGU_INTERCEPT_REGRESSION
+BPGU_INTERCEPT_USER_ONLY = (BPGU_INTERCEPT_REGRESSION
+                            + BPGU_COEF_TX * L1_INFO_TX_PER_DAY
+                            + BPGU_COEF_GAS * L1_INFO_TX_PER_DAY * L1_INFO_GAS_PER_TX)
+
+# Average gas per user tx (Q1 2026: avg_gas / avg_tx = 4,918,467,626 / 33,832)
+AVG_GAS_PER_USER_TX = 145_379
 
 # ── Gas used range ───────────────────────────────────────────────────────
 GAS_MIN = 0
@@ -39,7 +43,7 @@ def calc_operator_fee_params(daily_tx_count, mnt_price, share_system_tx=False):
         intercept = BPGU_INTERCEPT_SHARED
         total_tx = daily_tx_count + L1_INFO_TX_PER_DAY
     else:
-        intercept = BPGU_INTERCEPT
+        intercept = BPGU_INTERCEPT_USER_ONLY
         total_tx = daily_tx_count
     a = BPGU_COEF_TX * BPGU_PRICE_USD
     b = BPGU_COEF_GAS * BPGU_PRICE_USD
@@ -48,6 +52,33 @@ def calc_operator_fee_params(daily_tx_count, mnt_price, share_system_tx=False):
     fee_constant = (c / total_tx + a) / mnt_price
     fee_scalar = b / 100 / mnt_price
     return fee_constant, fee_scalar
+
+
+def calc_daily_pnl(daily_tx_count, mnt_price, fee_constant, fee_scalar):
+    # Full regression with all txs
+    total_tx = daily_tx_count + L1_INFO_TX_PER_DAY
+    user_gas = daily_tx_count * AVG_GAS_PER_USER_TX
+    system_gas = L1_INFO_TX_PER_DAY * L1_INFO_GAS_PER_TX
+    total_gas = user_gas + system_gas
+
+    bpgus_daily = (BPGU_INTERCEPT_REGRESSION
+                   + BPGU_COEF_TX * total_tx
+                   + BPGU_COEF_GAS * total_gas)
+    total_cost = (FIXED_DAILY_COST_USD + bpgus_daily * BPGU_PRICE_USD) / mnt_price
+
+    # Cost breakdown: system txs share base/fixed cost proportionally by tx count
+    a = BPGU_COEF_TX * BPGU_PRICE_USD
+    b = BPGU_COEF_GAS * BPGU_PRICE_USD
+    base_cost_usd = FIXED_DAILY_COST_USD + BPGU_INTERCEPT_REGRESSION * BPGU_PRICE_USD
+
+    system_cost = (base_cost_usd * L1_INFO_TX_PER_DAY / total_tx
+                   + a * L1_INFO_TX_PER_DAY
+                   + b * system_gas) / mnt_price
+    user_cost = total_cost - system_cost
+
+    # Revenue from operator fees (only user txs pay, system txs never charged)
+    daily_revenue = daily_tx_count * fee_constant + fee_scalar * 100 * user_gas
+    return total_cost, user_cost, system_cost, daily_revenue, daily_revenue - total_cost
 
 
 def post_arsia_cost_direct(gasused, x_gwei, fee_constant, fee_scalar):
@@ -78,7 +109,7 @@ st.caption("Adjust parameters in the sidebar to compare transaction costs")
 st.sidebar.header("Market Parameters")
 eth_price = st.sidebar.slider("ETH Price ($)", 500, 5000, 1800, step=50)
 mnt_price = st.sidebar.slider("MNT Price ($)", 0.05, 3.0, 0.80, step=0.05)
-daily_tx = st.sidebar.slider("Daily Tx Count", 10_000, 200_000, 50_000, step=5000)
+daily_tx = st.sidebar.slider("Daily User Tx Count", 10_000, 200_000, 35_000, step=5000)
 x_gwei = st.sidebar.slider("Post-Arsia Gas Price (gwei)", 0.01, 50.0, 10.0, step=0.01)
 
 st.sidebar.header("L1 Info Tx")
@@ -141,14 +172,14 @@ if expensive_mask.any():
 
 # Tx type reference lines
 TX_TYPES = [
-    (21_000, 'Native Transfer', '#9467bd'),
-    (50_000, 'ERC20 Transfer', '#2ca02c'),
-    (200_000, 'DEX Swap', '#d62728'),
+    (21_000, 'Native Transfer', '#9467bd', "top left"),
+    (50_000, 'ERC20 Transfer', '#2ca02c', "top right"),
+    (200_000, 'DEX Swap', '#d62728', "top left"),
 ]
-for gas_val, label, color in TX_TYPES:
+for gas_val, label, color, pos in TX_TYPES:
     fig.add_vline(x=gas_val, line_dash="dot", line_color=color, line_width=1,
                   annotation_text=f"{label}<br>{gas_val:,} gas",
-                  annotation_position="top left",
+                  annotation_position=pos,
                   annotation_font=dict(size=10, color=color))
 
 # Breakeven line
@@ -163,7 +194,7 @@ fig.update_layout(
     xaxis_title="Gas Used per Transaction",
     yaxis_title="Transaction Cost (MNT)",
     height=600,
-    legend=dict(x=0.01, y=0.99, bgcolor='rgba(255,255,255,0.8)'),
+    legend=dict(x=0.55, y=0.99, bgcolor='rgba(255,255,255,0.8)'),
     hovermode='x unified',
     margin=dict(t=40),
 )
@@ -182,6 +213,20 @@ with col3:
         st.metric("Breakeven Gas", f"{format_gas(breakeven)}")
     else:
         st.metric("Breakeven Gas", "N/A (no crossover)")
+
+# ── Daily P&L ────────────────────────────────────────────────────────────
+total_cost, user_cost, system_cost, daily_revenue, surplus = calc_daily_pnl(
+    daily_tx, mnt_price, fee_constant, fee_scalar)
+
+pcol1, pcol2, pcol3 = st.columns(3)
+with pcol1:
+    st.metric("Daily ZKP Cost", f"{total_cost:,.2f} MNT")
+    st.caption(f"  User Tx: {user_cost:,.2f} MNT  |  System Tx: {system_cost:,.2f} MNT")
+with pcol2:
+    st.metric("Operator Fee", f"{daily_revenue:,.2f} MNT")
+with pcol3:
+    st.metric("Surplus", f"{surplus:+,.2f} MNT",
+              delta=f"{surplus:+,.2f}", delta_color="normal")
 
 # ── Cost comparison table ────────────────────────────────────────────────
 st.subheader("Cost at Typical Transaction Types")
@@ -214,7 +259,7 @@ cost = gasPrice × gasUsed + operatorFeeConstant + operatorFeeScalar × 100 × g
 
 **Operator Fee Params (from regression model):**
 ```
-bpgus_daily = {BPGU_INTERCEPT} + ({BPGU_COEF_TX}) × TxCount + {BPGU_COEF_GAS} × GasConsumed
+bpgus_daily = {BPGU_INTERCEPT_REGRESSION} + ({BPGU_COEF_TX}) × TxCount + {BPGU_COEF_GAS} × GasConsumed
 
 operatorFeeConstant = (dailyFixedCost + intercept × bpguPrice) / dailyTxCount + txCoef × bpguPrice) / mntPrice
 operatorFeeScalar   = gasCoef × bpguPrice / 100 / mntPrice
